@@ -14,6 +14,7 @@
  *  GNU General Public License for more details.
  */
 
+/*
 #ifdef __WIN32__
 #define _WIN32_WINNT 0x0501
 #include <winsock2.h>
@@ -26,6 +27,7 @@
 #define DEFAULT_SERIAL "COM3"
 #define BACKGROUND_EXEC "START /MIN cmd /c "
 #endif
+*/
 
 #define _GNU_SOURCE
 #include <stdlib.h>
