@@ -156,33 +156,33 @@ int main(int argc, char* argv[])
     pthread_mutex_init(&server.mutex, NULL);
     pthread_mutex_init(&server.mutex_s, NULL);
 
-#ifdef __WIN32__
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2,2), &wsaData))
-    {
-        server_log(LOG_ERR, "main: WSAStartup");
-        exit(EXIT_FAILURE);
-    }
-
-    /* Disable the console quick edit feature */
-    HANDLE consoleHandle = GetStdHandle(STD_INPUT_HANDLE);
-    if (consoleHandle)
-    {
-        DWORD consoleMode;
-        if (GetConsoleMode(consoleHandle, &consoleMode))
-        {
-            const DWORD quick_edit = 0x40;
-            consoleMode &= ~quick_edit;
-            SetConsoleMode(consoleHandle, consoleMode);
-        }
-    }
-#else
+    //#ifdef __WIN32__
+    //WSADATA wsaData;
+    //if (WSAStartup(MAKEWORD(2,2), &wsaData))
+    //{
+    //    server_log(LOG_ERR, "main: WSAStartup");
+    //    exit(EXIT_FAILURE);
+    //}
+    //
+    ///* Disable the console quick edit feature */
+    //HANDLE consoleHandle = GetStdHandle(STD_INPUT_HANDLE);
+    //if (consoleHandle)
+    //{
+    //    DWORD consoleMode;
+    //    if (GetConsoleMode(consoleHandle, &consoleMode))
+    //    {
+    //        const DWORD quick_edit = 0x40;
+    //        consoleMode &= ~quick_edit;
+    //        SetConsoleMode(consoleHandle, consoleMode);
+    //    }
+    //}
+    //#else
     if(getuid() == 0)
     {
         fprintf(stderr, "error: running the server as root is a bad idea, giving up!\n");
         exit(EXIT_FAILURE);
     }
-#endif
+    //#endif
 
     while((c = getopt(argc, argv, "hbgxt:s:u:p:f:l:")) != -1)
     {
@@ -362,17 +362,17 @@ char* prepare_cmd(const char* cmd)
 {
     char* buff;
     int len;
-#ifdef __WIN32__
-    len = strlen(BACKGROUND_EXEC) + strlen(cmd) + 1;
-    buff = malloc(len);
-    memcpy(buff, BACKGROUND_EXEC, strlen(BACKGROUND_EXEC));
-    memcpy(buff+strlen(BACKGROUND_EXEC), cmd, strlen(cmd));
-#else
+    //#ifdef __WIN32__
+    //len = strlen(BACKGROUND_EXEC) + strlen(cmd) + 1;
+    //buff = malloc(len);
+    //memcpy(buff, BACKGROUND_EXEC, strlen(BACKGROUND_EXEC));
+    //memcpy(buff+strlen(BACKGROUND_EXEC), cmd, strlen(cmd));
+    //#else
     len = strlen(cmd) + 1 + 1;
     buff = malloc(len);
     memcpy(buff, cmd, strlen(cmd));
     buff[len-1] = '&';
-#endif
+    //#endif
     buff[len] = '\0';
     return buff;
 }
@@ -383,11 +383,11 @@ void server_init(int port)
     struct sockaddr_in addr;
     pthread_t thread;
 
-#ifdef __WIN32__
-    if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-#else
+    //#ifdef __WIN32__
+    //if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    //#else
     if((sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
-#endif
+    //#endif
     {
         server_log(LOG_ERR, "server_init: socket");
         exit(EXIT_FAILURE);
@@ -444,11 +444,11 @@ void* server_thread(void* sockfd)
         exit(EXIT_FAILURE);
     }
 
-#ifdef __WIN32__
-    while((connfd = accept((int)(intptr_t)sockfd, (struct sockaddr *)&dest, &dest_size)) >= 0)
-#else
+    //#ifdef __WIN32__
+    //while((connfd = accept((int)(intptr_t)sockfd, (struct sockaddr *)&dest, &dest_size)) >= 0)
+    //#else
     while((connfd = accept4((int)(intptr_t)sockfd, (struct sockaddr *)&dest, &dest_size, SOCK_CLOEXEC)) >= 0)
-#endif
+    //#endif
     {
         if(server.online >= server.maxusers)
         {
@@ -509,9 +509,9 @@ void* server_conn(void* t_data)
         snprintf(buffer, sizeof(buffer), "a0\n");
         send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
 
-#ifdef __WIN32__
-        Sleep(2000);
-#endif
+        //#ifdef __WIN32__
+        //Sleep(2000);
+        //#endif
         socket_close(connfd);
         free(ip);
         return NULL;
@@ -523,17 +523,17 @@ void* server_conn(void* t_data)
         send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
     }
 
-#ifdef __WIN32__
-    unsigned long on = 1;
-    if (ioctlsocket(connfd, FIONBIO, &on) != NO_ERROR)
-    {
-        server_log(LOG_ERR, "server_conn: ioctlsocket");
-        free(ip);
-        exit(EXIT_FAILURE);
-    }
-#else
+    //#ifdef __WIN32__
+    //unsigned long on = 1;
+    //if (ioctlsocket(connfd, FIONBIO, &on) != NO_ERROR)
+    //{
+    //    server_log(LOG_ERR, "server_conn: ioctlsocket");
+    //    free(ip);
+    //    exit(EXIT_FAILURE);
+    //}
+    //#else
     fcntl(connfd, F_SETFL, O_NONBLOCK);
-#endif
+    //#endif
 
     server_log(LOG_INFO, "user connected: %s:%u%s", ip, port, (auth ? "" : " (guest)"));
 
