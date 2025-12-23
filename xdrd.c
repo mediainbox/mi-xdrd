@@ -763,25 +763,25 @@ void serial_loop()
 void serial_write(char* msg, int len)
 {
     pthread_mutex_lock(&server.mutex_s);
-#ifdef __WIN32__
-    OVERLAPPED osWrite = {0};
-    DWORD dwWritten;
-
-    osWrite.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if(osWrite.hEvent == NULL)
-    {
-        server_log(LOG_ERR, "server_conn: CreateEvent");
-        exit(EXIT_FAILURE);
-    }
-
-    if(!WriteFile(server.serialfd, msg, len, &dwWritten, &osWrite))
-        if(GetLastError() == ERROR_IO_PENDING)
-            if(WaitForSingleObject(osWrite.hEvent, INFINITE) == WAIT_OBJECT_0)
-                GetOverlappedResult(server.serialfd, &osWrite, &dwWritten, FALSE);
-    CloseHandle(osWrite.hEvent);
-#else
+    //#ifdef __WIN32__
+    //OVERLAPPED osWrite = {0};
+    //DWORD dwWritten;
+    //
+    //osWrite.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    //if(osWrite.hEvent == NULL)
+    //{
+    //    server_log(LOG_ERR, "server_conn: CreateEvent");
+    //    exit(EXIT_FAILURE);
+    //}
+    //
+    //if(!WriteFile(server.serialfd, msg, len, &dwWritten, &osWrite))
+    //    if(GetLastError() == ERROR_IO_PENDING)
+    //        if(WaitForSingleObject(osWrite.hEvent, INFINITE) == WAIT_OBJECT_0)
+    //            GetOverlappedResult(server.serialfd, &osWrite, &dwWritten, FALSE);
+    //CloseHandle(osWrite.hEvent);
+    //#else
     write(server.serialfd, msg, len);
-#endif
+    //#endif
     pthread_mutex_unlock(&server.mutex_s);
 }
 
