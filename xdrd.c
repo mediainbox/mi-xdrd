@@ -210,11 +210,11 @@ int main(int argc, char* argv[])
             break;
 
         case 's':
-#ifdef __WIN32__
-            snprintf(serial, sizeof(serial), "\\\\.\\%s", optarg);
-#else
+            //#ifdef __WIN32__
+            //snprintf(serial, sizeof(serial), "\\\\.\\%s", optarg);
+            //#else
             snprintf(serial, sizeof(serial), "%s", optarg);
-#endif
+            //#endif
             break;
 
         case 'u':
