@@ -753,11 +753,11 @@ void serial_loop()
         msg_send(buff, pos+1);
         pos = 0;
     }
-#ifdef __WIN32__
-    CloseHandle(server.serialfd);
-#else
+    //#ifdef __WIN32__
+    //CloseHandle(server.serialfd);
+    //#else
     close(server.serialfd);
-#endif
+    //#endif
 }
 
 void serial_write(char* msg, int len)
