@@ -70,11 +70,11 @@ typedef struct user
 
 typedef struct server
 {
-#ifdef __WIN32__
-    HANDLE serialfd;
-#else
+    //#ifdef __WIN32__
+    //    HANDLE serialfd;
+    //#else
     int serialfd;
-#endif
+    //#endif
     pthread_mutex_t mutex; // users mutex
     pthread_mutex_t mutex_s; // serial mutex
     int background; // run in background
