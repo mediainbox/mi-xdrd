@@ -1014,13 +1014,13 @@ void tuner_reset()
 {
     /* restart Arduino using RTS & DTR lines */
     pthread_mutex_lock(&server.mutex_s);
-#ifdef __WIN32__
-    EscapeCommFunction(server.serialfd, CLRDTR);
-    EscapeCommFunction(server.serialfd, CLRRTS);
-    Sleep(10);
-    EscapeCommFunction(server.serialfd, SETDTR);
-    EscapeCommFunction(server.serialfd, SETRTS);
-#else
+    //#ifdef __WIN32__
+    //EscapeCommFunction(server.serialfd, CLRDTR);
+    //EscapeCommFunction(server.serialfd, CLRRTS);
+    //Sleep(10);
+    //EscapeCommFunction(server.serialfd, SETDTR);
+    //EscapeCommFunction(server.serialfd, SETRTS);
+    //#else
     int ctl;
     if(ioctl(server.serialfd, TIOCMGET, &ctl) != -1)
     {
@@ -1030,16 +1030,16 @@ void tuner_reset()
         ctl |=  (TIOCM_DTR | TIOCM_RTS);
         ioctl(server.serialfd, TIOCMSET, &ctl);
     }
-#endif
+    //#endif
     tuner_defaults();
 
     /* Wait for controller re-initialization,
        before unlocking the mutex. */
-#ifdef __WIN32__
-    Sleep(XDR_P_ARDUINO_INIT_TIME);
-#else
+    //#ifdef __WIN32__
+    //Sleep(XDR_P_ARDUINO_INIT_TIME);
+    //#else
     usleep(XDR_P_ARDUINO_INIT_TIME * 1000);
-#endif
+    //#endif
 
     pthread_mutex_unlock(&server.mutex_s);
 }
@@ -1047,9 +1047,9 @@ void tuner_reset()
 void socket_close(int fd)
 {
     shutdown(fd, 2);
-#ifdef __WIN32__
-    closesocket(fd);
-#else
+    //#ifdef __WIN32__
+    //closesocket(fd);
+    //#else
     close(fd);
-#endif
+    //#endif
 }
