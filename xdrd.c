@@ -296,9 +296,9 @@ int main(int argc, char* argv[])
     server_init(port);
     serial_init(serial);
     serial_loop();
-#ifdef __WIN32__
-    WSACleanup();
-#endif
+    //#ifdef __WIN32__
+    //WSACleanup();
+    //#endif
     server_log(LOG_ERR, "lost connection with tuner");
     return EXIT_FAILURE;
 }
