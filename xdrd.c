@@ -619,33 +619,33 @@ void* server_conn(void* t_data)
 
 void serial_init(char* path)
 {
-#ifdef __WIN32__
-    server.serialfd = CreateFile(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
-    if(server.serialfd == INVALID_HANDLE_VALUE)
-    {
-        server_log(LOG_ERR, "serial_init: CreateFile");
-        exit(EXIT_FAILURE);
-    }
-
-    DCB dcbSerialParams = {0};
-    if(!GetCommState(server.serialfd, &dcbSerialParams))
-    {
-        CloseHandle(server.serialfd);
-        server_log(LOG_ERR, "serial_init: GetCommState");
-        exit(EXIT_FAILURE);
-    }
-
-    dcbSerialParams.BaudRate = CBR_115200;
-    dcbSerialParams.ByteSize = 8;
-    dcbSerialParams.StopBits = ONESTOPBIT;
-    dcbSerialParams.Parity = NOPARITY;
-    if(!SetCommState(server.serialfd, &dcbSerialParams))
-    {
-        CloseHandle(server.serialfd);
-        server_log(LOG_ERR, "serial_init: SetCommState");
-        exit(EXIT_FAILURE);
-    }
-#else
+    //#ifdef __WIN32__
+    //server.serialfd = CreateFile(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
+    //if(server.serialfd == INVALID_HANDLE_VALUE)
+    //{
+    //    server_log(LOG_ERR, "serial_init: CreateFile");
+    //    exit(EXIT_FAILURE);
+    //}
+    //
+    //DCB dcbSerialParams = {0};
+    //if(!GetCommState(server.serialfd, &dcbSerialParams))
+    //{
+    //    CloseHandle(server.serialfd);
+    //    server_log(LOG_ERR, "serial_init: GetCommState");
+    //    exit(EXIT_FAILURE);
+    //}
+    //
+    //dcbSerialParams.BaudRate = CBR_115200;
+    //dcbSerialParams.ByteSize = 8;
+    //dcbSerialParams.StopBits = ONESTOPBIT;
+    //dcbSerialParams.Parity = NOPARITY;
+    //if(!SetCommState(server.serialfd, &dcbSerialParams))
+    //{
+    //    CloseHandle(server.serialfd);
+    //    server_log(LOG_ERR, "serial_init: SetCommState");
+    //    exit(EXIT_FAILURE);
+    //}
+    //#else
     if((server.serialfd = open(path, O_RDWR | O_NOCTTY | O_NDELAY | O_CLOEXEC)) < 0)
     {
         server_log(LOG_ERR, "serial_init: open");
@@ -683,7 +683,7 @@ void serial_init(char* path)
         server_log(LOG_ERR, "serial_init: tcsetattr");
         exit(EXIT_FAILURE);
     }
-#endif
+    //#endif
     tuner_reset();
 }
 
