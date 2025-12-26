@@ -560,10 +560,10 @@ void* server_conn(void* t_data)
 
     u = user_add(&server, connfd, auth);
 
-    snprintf(buffer, sizeof(buffer), "o%d,%d\n",
-             server.online_auth,
-             server.online - server.online_auth);
-    msg_send(buffer, strlen(buffer));
+    //snprintf(buffer, sizeof(buffer), "o%d,%d\n",
+    //         server.online_auth,
+    //         server.online - server.online_auth);
+    //msg_send(buffer, strlen(buffer));
 
     FD_ZERO(&input);
     FD_SET(u->fd, &input);
