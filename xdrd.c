@@ -780,7 +780,8 @@ void serial_write(char* msg, int len)
     //            GetOverlappedResult(server.serialfd, &osWrite, &dwWritten, FALSE);
     //CloseHandle(osWrite.hEvent);
     //#else
-    write(server.serialfd, msg, len);
+    ssize_t unused = write(server.serialfd, msg, len);
+    (void) unused;
     //#endif
     pthread_mutex_unlock(&server.mutex_s);
 }
