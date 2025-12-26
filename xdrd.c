@@ -806,8 +806,8 @@ user_t* user_add(server_t* LIST, int fd, int auth)
     if(server.f_exec && LIST->online_auth == 1)
     {
         server_log(LOG_INFO, "executing: %s", server.f_exec);
-	ssize_t unused = system(server.f_exec);
-	(void) unused;
+        ssize_t unused = system(server.f_exec);
+        (void) unused;
     }
 
     pthread_mutex_unlock(&LIST->mutex);
@@ -835,8 +835,8 @@ void user_remove(server_t* LIST, user_t* USER)
     if(server.l_exec && LIST->online_auth == 0)
     {
         server_log(LOG_INFO, "executing: %s", server.l_exec);
-	ssize_t unused = system(server.l_exec);
-	(void) unused;
+        ssize_t unused = system(server.l_exec);
+        (void) unused;
     }
 
     pthread_mutex_unlock(&LIST->mutex);
