@@ -537,26 +537,26 @@ void* server_conn(void* t_data)
 
     server_log(LOG_INFO, "user connected: %s:%u%s", ip, port, (auth ? "" : " (guest)"));
 
-    if(server.online_auth)
-    {
-        snprintf(buffer, sizeof(buffer),
-                 "M%d\nY%d\nT%d\nD%d\nA%d\n%c%d\nZ%d\nG%02d\nV%d\nQ%d\nC%d\nI%d,%d\n",
-                 server.mode,
-                 server.volume,
-                 server.freq,
-                 server.deemphasis,
-                 server.agc,
-                 (server.bandwidth != XDR_P_BANDWIDTH_INVALID ? XDR_P_BANDWIDTH : XDR_P_FILTER),
-                 (server.bandwidth != XDR_P_BANDWIDTH_INVALID ? server.bandwidth : server.filter),
-                 server.ant,
-                 server.gain,
-                 server.daa,
-                 server.squelch,
-                 server.rotator,
-                 server.sampling,
-                 server.detector);
-        send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
-    }
+    //if(server.online_auth)
+    //{
+    //    snprintf(buffer, sizeof(buffer),
+    //             "M%d\nY%d\nT%d\nD%d\nA%d\n%c%d\nZ%d\nG%02d\nV%d\nQ%d\nC%d\nI%d,%d\n",
+    //             server.mode,
+    //             server.volume,
+    //             server.freq,
+    //             server.deemphasis,
+    //             server.agc,
+    //             (server.bandwidth != XDR_P_BANDWIDTH_INVALID ? XDR_P_BANDWIDTH : XDR_P_FILTER),
+    //             (server.bandwidth != XDR_P_BANDWIDTH_INVALID ? server.bandwidth : server.filter),
+    //             server.ant,
+    //             server.gain,
+    //             server.daa,
+    //             server.squelch,
+    //             server.rotator,
+    //             server.sampling,
+    //             server.detector);
+    //    send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
+    //}
 
     u = user_add(&server, connfd, auth);
 
