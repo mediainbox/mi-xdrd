@@ -594,13 +594,13 @@ void* server_conn(void* t_data)
     server_log(LOG_INFO, "user disconnected: %s:%u", ip, port);
     free(ip);
 
-    if(server.online)
-    {
-        snprintf(buffer, sizeof(buffer), "o%d,%d\n",
-                 server.online_auth,
-                 server.online - server.online_auth);
-        msg_send(buffer, strlen(buffer));
-    }
+    //if(server.online)
+    //{
+    //    snprintf(buffer, sizeof(buffer), "o%d,%d\n",
+    //             server.online_auth,
+    //             server.online - server.online_auth);
+    //    msg_send(buffer, strlen(buffer));
+    //}
 
     if(!server.online_auth && server.poweroff)
     {
