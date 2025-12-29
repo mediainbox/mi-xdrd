@@ -602,17 +602,17 @@ void* server_conn(void* t_data)
     //    msg_send(buffer, strlen(buffer));
     //}
 
-    if(!server.online_auth && server.poweroff)
-    {
-        if(server.online)
-        {
-            /* tell unauthenticated users that XDR has been powered off */
-            sprintf(buffer, "X\n");
-            msg_send(buffer, strlen(buffer));
-        }
-        server_log(LOG_INFO, "tuner shutdown");
-        tuner_reset();
-    }
+    //if(!server.online_auth && server.poweroff)
+    //{
+    //    if(server.online)
+    //    {
+    //        /* tell unauthenticated users that XDR has been powered off */
+    //        sprintf(buffer, "X\n");
+    //        msg_send(buffer, strlen(buffer));
+    //    }
+    //    server_log(LOG_INFO, "tuner shutdown");
+    //    tuner_reset();
+    //}
 
     return NULL;
 }
