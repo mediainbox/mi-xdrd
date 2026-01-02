@@ -393,14 +393,14 @@ void server_init(int port)
         exit(EXIT_FAILURE);
     }
 
-#ifndef __WIN32__
+    //#ifndef __WIN32__
     int value = 1;
     if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&value, sizeof(value)) < 0)
     {
         server_log(LOG_ERR, "server_init: SO_REUSEADDR");
         exit(EXIT_FAILURE);
     }
-#endif
+    //#endif
 
     memset((char*)&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
