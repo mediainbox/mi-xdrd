@@ -191,11 +191,11 @@ int main(int argc, char* argv[])
         case 'h':
             show_usage(argv[0]);
 
-#ifndef __WIN32__
+	    //#ifndef __WIN32__
         case 'b':
             server.background = 1;
             break;
-#endif
+	    //#endif
 
         case 'g':
             server.guest = 1;
