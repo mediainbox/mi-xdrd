@@ -46,7 +46,7 @@
 #include <openssl/sha.h>
 #include "xdr-protocol.h"
 
-#ifndef __WIN32__
+//#ifndef __WIN32__
 #include <termios.h>
 #include <syslog.h>
 #include <arpa/inet.h>
@@ -54,7 +54,7 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #define DEFAULT_SERIAL "/dev/ttyUSB0"
-#endif
+//#endif
 
 #define VERSION       "1.0-git"
 #define DEFAULT_USERS 10
