@@ -334,13 +334,13 @@ void server_log(int prio, char* msg, ...)
 {
     va_list myargs;
     va_start(myargs, msg);
-#ifndef __WIN32__
+    //#ifndef __WIN32__
     if(server.background)
     {
         vsyslog(prio, msg, myargs);
     }
     else
-#endif
+      //#endif
     {
         switch(prio)
         {
