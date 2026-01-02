@@ -251,7 +251,7 @@ int main(int argc, char* argv[])
         show_usage(argv[0]);
     }
 
-#ifndef __WIN32__
+    //#ifndef __WIN32__
     if(server.background)
     {
         switch(fork())
@@ -291,7 +291,7 @@ int main(int argc, char* argv[])
             exit(EXIT_FAILURE);
         }
     }
-#endif
+    //#endif
     server_log(LOG_INFO, "xdrd " VERSION " is starting using %s and TCP port: %d", serial, port);
     server_init(port);
     serial_init(serial);
