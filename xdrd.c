@@ -309,11 +309,11 @@ void show_usage(char* arg)
     printf("usage:\n");
     printf("%s [ -s serial ] [ -t port ] [ -u users ]\n", arg);
     printf("%*s [ -p password ] [ -f command ] [ -l command ]\n", (int)strlen(arg), "");
-#ifndef __WIN32__
+    //#ifndef __WIN32__
     printf("%*s [ -hgxb ]\n", (int)strlen(arg), "");
-#else
-    printf("%*s [ -hgx ]\n", (int)strlen(arg), "");
-#endif
+    //#else
+    //printf("%*s [ -hgx ]\n", (int)strlen(arg), "");
+    //#endif
     printf("options:\n");
     printf("  -s  serial port (default %s)\n", DEFAULT_SERIAL);
     printf("  -t  tcp/ip port (default %d)\n", XDR_TCP_DEFAULT_PORT);
@@ -324,9 +324,9 @@ void show_usage(char* arg)
     printf("  -x  power the tuner off after last user has disconnected\n");
     printf("  -f  execute the specified command after first user has connected\n");
     printf("  -l  execute the specified command after last user has disconnected\n");
-#ifndef __WIN32__
+    //#ifndef __WIN32__
     printf("  -b  run server in the background\n");
-#endif
+    //#endif
     exit(EXIT_SUCCESS);
 }
 
