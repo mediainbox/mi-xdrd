@@ -1,0 +1,25 @@
+# TEF6686 udev rules — stable symlinks by physical hub port.
+#
+# Creates /dev/ttyTEF<N> and /dev/snd/tef-<N>-{control,pcm} symlinks where N
+# is the hub port number (1-4), independent of the kernel's /dev/ttyACMn
+# enumeration order. MODE="0666" so non-root processes can open the nodes.
+#
+# Hub port numbering is the kernel's view (reversed from PCB silkscreen:
+# hub port 1 = USBC4, hub port 4 = USBC1).
+SUBSYSTEM=="tty", KERNELS=="4-1.1", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="ttyTEF1", MODE="0666"
+SUBSYSTEM=="tty", KERNELS=="4-1.2", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="ttyTEF2", MODE="0666"
+SUBSYSTEM=="tty", KERNELS=="4-1.3", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="ttyTEF3", MODE="0666"
+SUBSYSTEM=="tty", KERNELS=="4-1.4", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="ttyTEF4", MODE="0666"
+SUBSYSTEM=="sound", KERNEL=="controlC*", KERNELS=="4-1.1", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="snd/tef-1-control"
+SUBSYSTEM=="sound", KERNEL=="controlC*", KERNELS=="4-1.2", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="snd/tef-2-control"
+SUBSYSTEM=="sound", KERNEL=="controlC*", KERNELS=="4-1.3", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="snd/tef-3-control"
+SUBSYSTEM=="sound", KERNEL=="controlC*", KERNELS=="4-1.4", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="snd/tef-4-control"
+SUBSYSTEM=="sound", KERNEL=="pcmC*D0c", KERNELS=="4-1.1", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="snd/tef-1-pcm"
+SUBSYSTEM=="sound", KERNEL=="pcmC*D0c", KERNELS=="4-1.2", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="snd/tef-2-pcm"
+SUBSYSTEM=="sound", KERNEL=="pcmC*D0c", KERNELS=="4-1.3", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="snd/tef-3-pcm"
+SUBSYSTEM=="sound", KERNEL=="pcmC*D0c", KERNELS=="4-1.4", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", SYMLINK+="snd/tef-4-pcm"
+
+SUBSYSTEM=="sound", KERNELS=="4-1.1", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", ATTR{id}="TEF1"
+SUBSYSTEM=="sound", KERNELS=="4-1.2", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", ATTR{id}="TEF2"
+SUBSYSTEM=="sound", KERNELS=="4-1.3", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", ATTR{id}="TEF3"
+SUBSYSTEM=="sound", KERNELS=="4-1.4", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", ATTR{id}="TEF4"
