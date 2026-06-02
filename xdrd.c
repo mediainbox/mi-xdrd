@@ -14,21 +14,6 @@
  *  GNU General Public License for more details.
  */
 
-/*
-#ifdef __WIN32__
-#define _WIN32_WINNT 0x0501
-#include <winsock2.h>
-#include <windows.h>
-#include <ws2tcpip.h>
-#define strcasecmp _stricmp
-#define MSG_NOSIGNAL 0
-#define LOG_ERR  0
-#define LOG_INFO 1
-#define DEFAULT_SERIAL "COM3"
-#define BACKGROUND_EXEC "START /MIN cmd /c "
-#endif
-*/
-
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
@@ -44,9 +29,9 @@
 #define OPENSSL_API_COMPAT 0x10100000L
 #include <openssl/rand.h>
 #include <openssl/sha.h>
+#include <openssl/evp.h>
 #include "xdr-protocol.h"
 
-//#ifndef __WIN32__
 #include <termios.h>
 #include <syslog.h>
 #include <arpa/inet.h>
@@ -54,27 +39,39 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #define DEFAULT_SERIAL "/dev/ttyUSB0"
-//#endif
+
+#ifdef __APPLE__
+/* accept4 and SOCK_CLOEXEC are Linux-specific; emulate on macOS for builds */
+#ifndef SOCK_CLOEXEC
+#define SOCK_CLOEXEC 0
+#endif
+static int accept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags)
+{
+    (void)flags;
+    int fd = accept(sockfd, addr, addrlen);
+    if(fd >= 0)
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+}
+#endif
 
 #define VERSION       "1.0-git"
 #define DEFAULT_USERS 10
 #define SERIAL_BUFFER 8192
+#define WS_GUID       "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 typedef struct user
 {
     int fd;
     int auth;
+    int ws;
     struct user* next;
     struct user* prev;
 } user_t;
 
 typedef struct server
 {
-    //#ifdef __WIN32__
-    //    HANDLE serialfd;
-    //#else
     int serialfd;
-    //#endif
     pthread_mutex_t mutex; // users mutex
     pthread_mutex_t mutex_s; // serial mutex
     int background; // run in background
@@ -124,23 +121,31 @@ char* prepare_cmd(const char*);
 void server_init(int);
 void* server_thread(void*);
 void* server_conn(void*);
+void ws_server_init(int);
+void* ws_server_thread(void*);
+void* ws_server_conn(void*);
+int  ws_handshake(int);
+int  ws_read_frame(int, char*, int);
+void ws_write_frame(int, const char*, int);
 void serial_init(char*);
-void serial_loop();
+void serial_loop(void);
 void serial_write(char*, int);
-user_t* user_add(server_t*, int, int);
+user_t* user_add(server_t*, int, int, int);
 void user_remove(server_t*, user_t*);
 void msg_parse_serial(char, char*);
 void msg_send(char*, int);
-char* auth_salt();
+char* auth_salt(void);
 int auth_hash(char*, char*, char*);
-void tuner_defaults();
-void tuner_reset();
+void tuner_defaults(void);
+void tuner_reset(void);
 void socket_close(int);
 
+#ifndef XDRD_NO_MAIN
 int main(int argc, char* argv[])
 {
     char serial[250] = DEFAULT_SERIAL;
     int port = XDR_TCP_DEFAULT_PORT;
+    int ws_port = 0;
     int c;
 
     server.background = 0;
@@ -156,46 +161,22 @@ int main(int argc, char* argv[])
     pthread_mutex_init(&server.mutex, NULL);
     pthread_mutex_init(&server.mutex_s, NULL);
 
-    //#ifdef __WIN32__
-    //WSADATA wsaData;
-    //if (WSAStartup(MAKEWORD(2,2), &wsaData))
-    //{
-    //    server_log(LOG_ERR, "main: WSAStartup");
-    //    exit(EXIT_FAILURE);
-    //}
-    //
-    ///* Disable the console quick edit feature */
-    //HANDLE consoleHandle = GetStdHandle(STD_INPUT_HANDLE);
-    //if (consoleHandle)
-    //{
-    //    DWORD consoleMode;
-    //    if (GetConsoleMode(consoleHandle, &consoleMode))
-    //    {
-    //        const DWORD quick_edit = 0x40;
-    //        consoleMode &= ~quick_edit;
-    //        SetConsoleMode(consoleHandle, consoleMode);
-    //    }
-    //}
-    //#else
     if(getuid() == 0)
     {
         fprintf(stderr, "error: running the server as root is a bad idea, giving up!\n");
         exit(EXIT_FAILURE);
     }
-    //#endif
 
-    while((c = getopt(argc, argv, "hbgxt:s:u:p:f:l:")) != -1)
+    while((c = getopt(argc, argv, "hbgxt:s:u:p:f:l:w:")) != -1)
     {
         switch(c)
         {
         case 'h':
             show_usage(argv[0]);
 
-	    //#ifndef __WIN32__
         case 'b':
             server.background = 1;
             break;
-	    //#endif
 
         case 'g':
             server.guest = 1;
@@ -210,11 +191,7 @@ int main(int argc, char* argv[])
             break;
 
         case 's':
-            //#ifdef __WIN32__
-            //snprintf(serial, sizeof(serial), "\\\\.\\%s", optarg);
-            //#else
             snprintf(serial, sizeof(serial), "%s", optarg);
-            //#endif
             break;
 
         case 'u':
@@ -233,6 +210,10 @@ int main(int argc, char* argv[])
             server.l_exec = prepare_cmd(optarg);
             break;
 
+        case 'w':
+            ws_port = atoi(optarg);
+            break;
+
         case ':':
         case '?':
             show_usage(argv[0]);
@@ -245,13 +226,24 @@ int main(int argc, char* argv[])
         show_usage(argv[0]);
     }
 
+    if(ws_port && (ws_port < 1024 || ws_port > 65535))
+    {
+        fprintf(stderr, "error: the websocket port must be in 1024-65535 range\n");
+        show_usage(argv[0]);
+    }
+
+    if(ws_port && ws_port == port)
+    {
+        fprintf(stderr, "error: tcp port and websocket port must be different\n");
+        show_usage(argv[0]);
+    }
+
     if(!server.password || !strlen(server.password))
     {
         fprintf(stderr, "error: no password specified\n");
         show_usage(argv[0]);
     }
 
-    //#ifndef __WIN32__
     if(server.background)
     {
         switch(fork())
@@ -291,32 +283,34 @@ int main(int argc, char* argv[])
             exit(EXIT_FAILURE);
         }
     }
-    //#endif
+
     server_log(LOG_INFO, "xdrd " VERSION " is starting using %s and TCP port: %d", serial, port);
     server_init(port);
+
+    if(ws_port)
+    {
+        server_log(LOG_INFO, "xdrd WebSocket server starting on port: %d", ws_port);
+        ws_server_init(ws_port);
+    }
+
     serial_init(serial);
     serial_loop();
-    //#ifdef __WIN32__
-    //WSACleanup();
-    //#endif
     server_log(LOG_ERR, "lost connection with tuner");
     return EXIT_FAILURE;
 }
+#endif /* XDRD_NO_MAIN */
 
 void show_usage(char* arg)
 {
     printf("xdrd " VERSION "\n");
     printf("usage:\n");
-    printf("%s [ -s serial ] [ -t port ] [ -u users ]\n", arg);
+    printf("%s [ -s serial ] [ -t port ] [ -w wsport ] [ -u users ]\n", arg);
     printf("%*s [ -p password ] [ -f command ] [ -l command ]\n", (int)strlen(arg), "");
-    //#ifndef __WIN32__
     printf("%*s [ -hgxb ]\n", (int)strlen(arg), "");
-    //#else
-    //printf("%*s [ -hgx ]\n", (int)strlen(arg), "");
-    //#endif
     printf("options:\n");
     printf("  -s  serial port (default %s)\n", DEFAULT_SERIAL);
     printf("  -t  tcp/ip port (default %d)\n", XDR_TCP_DEFAULT_PORT);
+    printf("  -w  websocket port (disabled by default)\n");
     printf("  -u  max users   (default %d)\n", DEFAULT_USERS);
     printf("  -p  specify password (required)\n");
     printf("  -h  show this help list\n");
@@ -324,9 +318,7 @@ void show_usage(char* arg)
     printf("  -x  power the tuner off after last user has disconnected\n");
     printf("  -f  execute the specified command after first user has connected\n");
     printf("  -l  execute the specified command after last user has disconnected\n");
-    //#ifndef __WIN32__
     printf("  -b  run server in the background\n");
-    //#endif
     exit(EXIT_SUCCESS);
 }
 
@@ -334,13 +326,11 @@ void server_log(int prio, char* msg, ...)
 {
     va_list myargs;
     va_start(myargs, msg);
-    //#ifndef __WIN32__
     if(server.background)
     {
         vsyslog(prio, msg, myargs);
     }
     else
-      //#endif
     {
         switch(prio)
         {
@@ -362,17 +352,10 @@ char* prepare_cmd(const char* cmd)
 {
     char* buff;
     int len;
-    //#ifdef __WIN32__
-    //len = strlen(BACKGROUND_EXEC) + strlen(cmd) + 1;
-    //buff = malloc(len);
-    //memcpy(buff, BACKGROUND_EXEC, strlen(BACKGROUND_EXEC));
-    //memcpy(buff+strlen(BACKGROUND_EXEC), cmd, strlen(cmd));
-    //#else
     len = strlen(cmd) + 1 + 1;
     buff = malloc(len);
     memcpy(buff, cmd, strlen(cmd));
     buff[len-1] = '&';
-    //#endif
     buff[len] = '\0';
     return buff;
 }
@@ -383,24 +366,18 @@ void server_init(int port)
     struct sockaddr_in addr;
     pthread_t thread;
 
-    //#ifdef __WIN32__
-    //if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-    //#else
     if((sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
-    //#endif
     {
         server_log(LOG_ERR, "server_init: socket");
         exit(EXIT_FAILURE);
     }
 
-    //#ifndef __WIN32__
     int value = 1;
     if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&value, sizeof(value)) < 0)
     {
         server_log(LOG_ERR, "server_init: SO_REUSEADDR");
         exit(EXIT_FAILURE);
     }
-    //#endif
 
     memset((char*)&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -444,11 +421,7 @@ void* server_thread(void* sockfd)
         exit(EXIT_FAILURE);
     }
 
-    //#ifdef __WIN32__
-    //while((connfd = accept((int)(intptr_t)sockfd, (struct sockaddr *)&dest, &dest_size)) >= 0)
-    //#else
     while((connfd = accept4((int)(intptr_t)sockfd, (struct sockaddr *)&dest, &dest_size, SOCK_CLOEXEC)) >= 0)
-    //#endif
     {
         if(server.online >= server.maxusers)
         {
@@ -508,10 +481,6 @@ void* server_conn(void* t_data)
     {
         snprintf(buffer, sizeof(buffer), "a0\n");
         send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
-
-        //#ifdef __WIN32__
-        //Sleep(2000);
-        //#endif
         socket_close(connfd);
         free(ip);
         return NULL;
@@ -523,47 +492,11 @@ void* server_conn(void* t_data)
         send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
     }
 
-    //#ifdef __WIN32__
-    //unsigned long on = 1;
-    //if (ioctlsocket(connfd, FIONBIO, &on) != NO_ERROR)
-    //{
-    //    server_log(LOG_ERR, "server_conn: ioctlsocket");
-    //    free(ip);
-    //    exit(EXIT_FAILURE);
-    //}
-    //#else
     fcntl(connfd, F_SETFL, O_NONBLOCK);
-    //#endif
 
     server_log(LOG_INFO, "user connected: %s:%u%s", ip, port, (auth ? "" : " (guest)"));
 
-    //if(server.online_auth)
-    //{
-    //    snprintf(buffer, sizeof(buffer),
-    //             "M%d\nY%d\nT%d\nD%d\nA%d\n%c%d\nZ%d\nG%02d\nV%d\nQ%d\nC%d\nI%d,%d\n",
-    //             server.mode,
-    //             server.volume,
-    //             server.freq,
-    //             server.deemphasis,
-    //             server.agc,
-    //             (server.bandwidth != XDR_P_BANDWIDTH_INVALID ? XDR_P_BANDWIDTH : XDR_P_FILTER),
-    //             (server.bandwidth != XDR_P_BANDWIDTH_INVALID ? server.bandwidth : server.filter),
-    //             server.ant,
-    //             server.gain,
-    //             server.daa,
-    //             server.squelch,
-    //             server.rotator,
-    //             server.sampling,
-    //             server.detector);
-    //    send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
-    //}
-
-    u = user_add(&server, connfd, auth);
-
-    //snprintf(buffer, sizeof(buffer), "o%d,%d\n",
-    //         server.online_auth,
-    //         server.online - server.online_auth);
-    //msg_send(buffer, strlen(buffer));
+    u = user_add(&server, connfd, auth, 0);
 
     FD_ZERO(&input);
     FD_SET(u->fd, &input);
@@ -594,58 +527,383 @@ void* server_conn(void* t_data)
     server_log(LOG_INFO, "user disconnected: %s:%u", ip, port);
     free(ip);
 
-    //if(server.online)
-    //{
-    //    snprintf(buffer, sizeof(buffer), "o%d,%d\n",
-    //             server.online_auth,
-    //             server.online - server.online_auth);
-    //    msg_send(buffer, strlen(buffer));
-    //}
-
-    //if(!server.online_auth && server.poweroff)
-    //{
-    //    if(server.online)
-    //    {
-    //        /* tell unauthenticated users that XDR has been powered off */
-    //        sprintf(buffer, "X\n");
-    //        msg_send(buffer, strlen(buffer));
-    //    }
-    //    server_log(LOG_INFO, "tuner shutdown");
-    //    tuner_reset();
-    //}
-
     return NULL;
 }
 
+/* ── WebSocket server ─────────────────────────────────────────────────────── */
+
+void ws_server_init(int port)
+{
+    int sockfd;
+    struct sockaddr_in addr;
+    pthread_t thread;
+
+    if((sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
+    {
+        server_log(LOG_ERR, "ws_server_init: socket");
+        exit(EXIT_FAILURE);
+    }
+
+    int value = 1;
+    if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&value, sizeof(value)) < 0)
+    {
+        server_log(LOG_ERR, "ws_server_init: SO_REUSEADDR");
+        exit(EXIT_FAILURE);
+    }
+
+    memset((char*)&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(port);
+
+    if(bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+    {
+        server_log(LOG_ERR, "ws_server_init: bind");
+        exit(EXIT_FAILURE);
+    }
+
+    listen(sockfd, 4);
+
+    if(pthread_create(&thread, NULL, ws_server_thread, (void*)(intptr_t)sockfd))
+    {
+        server_log(LOG_ERR, "ws_server_init: pthread_create");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void* ws_server_thread(void* sockfd)
+{
+    pthread_t thread;
+    pthread_attr_t attr;
+    int connfd;
+    thread_t *t_data;
+    struct sockaddr_in dest;
+    socklen_t dest_size = sizeof(struct sockaddr_in);
+
+    if(pthread_attr_init(&attr))
+    {
+        server_log(LOG_ERR, "ws_server_thread: pthread_attr_init");
+        exit(EXIT_FAILURE);
+    }
+
+    if(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED))
+    {
+        server_log(LOG_ERR, "ws_server_thread: pthread_attr_setdetachstate");
+        exit(EXIT_FAILURE);
+    }
+
+    while((connfd = accept4((int)(intptr_t)sockfd, (struct sockaddr *)&dest, &dest_size, SOCK_CLOEXEC)) >= 0)
+    {
+        if(server.online >= server.maxusers)
+        {
+            socket_close(connfd);
+            continue;
+        }
+
+        t_data = malloc(sizeof(thread_t));
+        t_data->fd = connfd;
+        t_data->salt = NULL;
+        t_data->ip = strdup(inet_ntoa(dest.sin_addr));
+        t_data->port = ntohs(dest.sin_port);
+        if(pthread_create(&thread, &attr, ws_server_conn, (void*)t_data))
+        {
+            server_log(LOG_ERR, "ws_server_thread: pthread_create");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    pthread_attr_destroy(&attr);
+    server_log(LOG_ERR, "ws_server_thread: accept");
+    exit(EXIT_FAILURE);
+    return NULL;
+}
+
+void* ws_server_conn(void* t_data)
+{
+    int connfd = ((thread_t*)t_data)->fd;
+    char* ip = ((thread_t*)t_data)->ip;
+    uint16_t port = ((thread_t*)t_data)->port;
+
+    char frame[256];
+    int auth = 0;
+    user_t *u;
+
+    free(t_data);
+
+    if(!ws_handshake(connfd))
+    {
+        socket_close(connfd);
+        free(ip);
+        return NULL;
+    }
+
+    char* salt = auth_salt();
+    if(!salt)
+    {
+        socket_close(connfd);
+        free(ip);
+        return NULL;
+    }
+
+    snprintf(frame, sizeof(frame), "%s\n", salt);
+    ws_write_frame(connfd, frame, strlen(frame));
+
+    int n = ws_read_frame(connfd, frame, sizeof(frame) - 1);
+    if(n >= 40)
+    {
+        frame[40] = 0;
+        auth = auth_hash(salt, server.password, frame);
+    }
+
+    free(salt);
+
+    if(!auth && !server.guest)
+    {
+        ws_write_frame(connfd, "a0\n", 3);
+        socket_close(connfd);
+        free(ip);
+        return NULL;
+    }
+
+    if(!auth && server.guest)
+        ws_write_frame(connfd, "a1\n", 3);
+
+    server_log(LOG_INFO, "WS user connected: %s:%u%s", ip, port, (auth ? "" : " (guest)"));
+
+    u = user_add(&server, connfd, auth, 1);
+
+    while(1)
+    {
+        n = ws_read_frame(connfd, frame, sizeof(frame) - 1);
+        if(n <= 0)
+            break;
+
+        if(frame[0] == XDR_P_SHUTDOWN)
+            break;
+
+        if(u->auth)
+        {
+            /* Ensure newline terminator for serial_write */
+            if(frame[n-1] != '\n')
+                frame[n++] = '\n';
+            serial_write(frame, n);
+        }
+    }
+
+    user_remove(&server, u);
+    server_log(LOG_INFO, "WS user disconnected: %s:%u", ip, port);
+    free(ip);
+    return NULL;
+}
+
+/*
+ * Performs the RFC 6455 WebSocket opening handshake.
+ * Reads HTTP headers, computes Sec-WebSocket-Accept, sends 101.
+ * Returns 1 on success, 0 on failure.
+ */
+int ws_handshake(int fd)
+{
+    char buf[4096];
+    char key[256];
+    int total = 0;
+    ssize_t n;
+    char *p, *end;
+
+    memset(buf, 0, sizeof(buf));
+
+    /* Read HTTP request until we see the blank line */
+    while(total < (int)sizeof(buf) - 1)
+    {
+        n = recv(fd, buf + total, sizeof(buf) - 1 - total, 0);
+        if(n <= 0)
+            return 0;
+        total += n;
+        buf[total] = 0;
+        if(strstr(buf, "\r\n\r\n"))
+            break;
+        if(total >= (int)sizeof(buf) - 1)
+            return 0;
+    }
+
+    p = strcasestr(buf, "Sec-WebSocket-Key:");
+    if(!p)
+        return 0;
+    p += 18;
+    while(*p == ' ')
+        p++;
+    end = strstr(p, "\r\n");
+    if(!end)
+        return 0;
+    if((end - p) >= (int)sizeof(key))
+        return 0;
+    memcpy(key, p, end - p);
+    key[end - p] = 0;
+
+    /* Sec-WebSocket-Accept = base64(SHA1(key + GUID)) */
+    char combined[512];
+    snprintf(combined, sizeof(combined), "%s%s", key, WS_GUID);
+
+    unsigned char sha[SHA_DIGEST_LENGTH];
+    SHA1((unsigned char*)combined, strlen(combined), sha);
+
+    unsigned char accept_b64[64];
+    int olen = EVP_EncodeBlock(accept_b64, sha, SHA_DIGEST_LENGTH);
+    accept_b64[olen] = 0;
+
+    char response[512];
+    snprintf(response, sizeof(response),
+             "HTTP/1.1 101 Switching Protocols\r\n"
+             "Upgrade: websocket\r\n"
+             "Connection: Upgrade\r\n"
+             "Sec-WebSocket-Accept: %s\r\n\r\n",
+             accept_b64);
+
+    send(fd, response, strlen(response), MSG_NOSIGNAL);
+    return 1;
+}
+
+/* Read exactly len bytes from fd into buf. Returns 1 on success, 0 on error. */
+static int recv_all(int fd, void* buf, size_t len)
+{
+    size_t total = 0;
+    while(total < len)
+    {
+        ssize_t n = recv(fd, (char*)buf + total, len - total, 0);
+        if(n <= 0)
+            return 0;
+        total += n;
+    }
+    return 1;
+}
+
+/*
+ * Reads one complete WebSocket frame from fd into buf (null-terminated).
+ * Handles masking (client→server frames are always masked per RFC 6455).
+ * Transparently handles ping/pong; skips unknown opcodes.
+ * Returns payload length on success, 0 on clean close/disconnect, -1 on error.
+ */
+int ws_read_frame(int fd, char* buf, int maxlen)
+{
+    unsigned char hdr[2];
+    uint64_t plen;
+    unsigned char mask[4];
+    int masked, opcode;
+    int i;
+
+    while(1)
+    {
+        if(!recv_all(fd, hdr, 2))
+            return 0;
+
+        opcode = hdr[0] & 0x0F;
+        masked = (hdr[1] >> 7) & 1;
+        plen = hdr[1] & 0x7F;
+
+        if(plen == 126)
+        {
+            unsigned char ext[2];
+            if(!recv_all(fd, ext, 2))
+                return 0;
+            plen = ((uint64_t)ext[0] << 8) | ext[1];
+        }
+        else if(plen == 127)
+        {
+            unsigned char ext[8];
+            if(!recv_all(fd, ext, 8))
+                return 0;
+            plen = 0;
+            for(i = 0; i < 8; i++)
+                plen = (plen << 8) | ext[i];
+        }
+
+        memset(mask, 0, sizeof(mask));
+        if(masked && !recv_all(fd, mask, 4))
+            return 0;
+
+        if(opcode == 0x8) /* Close */
+        {
+            if(plen > 0 && plen <= 125)
+            {
+                char discard[125];
+                recv_all(fd, discard, (size_t)plen);
+            }
+            return 0;
+        }
+
+        if(opcode == 0x9) /* Ping — respond with Pong */
+        {
+            unsigned char ping_payload[125];
+            size_t ping_len = (plen <= 125) ? (size_t)plen : 0;
+            if(ping_len > 0 && !recv_all(fd, ping_payload, ping_len))
+                return 0;
+            if(masked)
+                for(i = 0; i < (int)ping_len; i++)
+                    ping_payload[i] ^= mask[i % 4];
+            unsigned char pong_hdr[2] = {0x8A, (unsigned char)ping_len};
+            send(fd, pong_hdr, 2, MSG_NOSIGNAL);
+            if(ping_len > 0)
+                send(fd, ping_payload, ping_len, MSG_NOSIGNAL);
+            continue;
+        }
+
+        if(opcode == 0x0A) /* Pong — ignore */
+        {
+            if(plen > 0 && plen <= 125)
+            {
+                char discard[125];
+                recv_all(fd, discard, (size_t)plen);
+            }
+            continue;
+        }
+
+        /* Text (0x1) or binary (0x2) or continuation (0x0) */
+        if(plen >= (uint64_t)maxlen)
+            return -1;
+
+        if(plen > 0 && !recv_all(fd, buf, (size_t)plen))
+            return 0;
+
+        if(masked)
+            for(i = 0; i < (int)plen; i++)
+                buf[i] ^= mask[i % 4];
+
+        buf[plen] = 0;
+        return (int)plen;
+    }
+}
+
+/*
+ * Sends data as a single unmasked WebSocket text frame (server→client frames
+ * are never masked per RFC 6455).
+ */
+void ws_write_frame(int fd, const char* data, int len)
+{
+    unsigned char hdr[4];
+    int hlen;
+
+    hdr[0] = 0x81; /* FIN=1, opcode=text */
+
+    if(len < 126)
+    {
+        hdr[1] = (unsigned char)len;
+        hlen = 2;
+    }
+    else
+    {
+        hdr[1] = 126;
+        hdr[2] = (len >> 8) & 0xFF;
+        hdr[3] = len & 0xFF;
+        hlen = 4;
+    }
+
+    send(fd, hdr, hlen, MSG_NOSIGNAL);
+    send(fd, data, len, MSG_NOSIGNAL);
+}
+
+/* ── Serial ───────────────────────────────────────────────────────────────── */
+
 void serial_init(char* path)
 {
-    //#ifdef __WIN32__
-    //server.serialfd = CreateFile(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
-    //if(server.serialfd == INVALID_HANDLE_VALUE)
-    //{
-    //    server_log(LOG_ERR, "serial_init: CreateFile");
-    //    exit(EXIT_FAILURE);
-    //}
-    //
-    //DCB dcbSerialParams = {0};
-    //if(!GetCommState(server.serialfd, &dcbSerialParams))
-    //{
-    //    CloseHandle(server.serialfd);
-    //    server_log(LOG_ERR, "serial_init: GetCommState");
-    //    exit(EXIT_FAILURE);
-    //}
-    //
-    //dcbSerialParams.BaudRate = CBR_115200;
-    //dcbSerialParams.ByteSize = 8;
-    //dcbSerialParams.StopBits = ONESTOPBIT;
-    //dcbSerialParams.Parity = NOPARITY;
-    //if(!SetCommState(server.serialfd, &dcbSerialParams))
-    //{
-    //    CloseHandle(server.serialfd);
-    //    server_log(LOG_ERR, "serial_init: SetCommState");
-    //    exit(EXIT_FAILURE);
-    //}
-    //#else
     if((server.serialfd = open(path, O_RDWR | O_NOCTTY | O_NDELAY | O_CLOEXEC)) < 0)
     {
         server_log(LOG_ERR, "serial_init: open");
@@ -683,55 +941,15 @@ void serial_init(char* path)
         server_log(LOG_ERR, "serial_init: tcsetattr");
         exit(EXIT_FAILURE);
     }
-    //#endif
+
     tuner_reset();
 }
 
-void serial_loop()
+void serial_loop(void)
 {
     char buff[SERIAL_BUFFER];
     int pos = 0;
-#ifdef __WIN32__
-    DWORD state, len_in = 0;
-    BOOL fWaitingOnRead = FALSE;
-    OVERLAPPED osReader = {0};
-    osReader.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if(osReader.hEvent == NULL)
-    {
-        server_log(LOG_ERR, "serial_loop: CreateEvent");
-        exit(EXIT_FAILURE);
-    }
-    while(1)
-    {
-        if(!fWaitingOnRead)
-        {
-            if(!ReadFile(server.serialfd, &buff[pos], 1, &len_in, &osReader))
-            {
-                if(GetLastError() != ERROR_IO_PENDING)
-                {
-                    CloseHandle(osReader.hEvent);
-                    break;
-                }
-                else
-                    fWaitingOnRead = TRUE;
-            }
-        }
-        if(fWaitingOnRead)
-        {
-            state = WaitForSingleObject(osReader.hEvent, 200);
-            if(state == WAIT_TIMEOUT)
-                continue;
-            if(state != WAIT_OBJECT_0 ||
-               !GetOverlappedResult(server.serialfd, &osReader, &len_in, FALSE))
-            {
-                CloseHandle(osReader.hEvent);
-                break;
-            }
-            fWaitingOnRead = FALSE;
-        }
-        if(len_in != 1)
-            continue;
-#else
+
     fd_set input;
     FD_ZERO(&input);
     FD_SET(server.serialfd, &input);
@@ -739,7 +957,7 @@ void serial_loop()
     {
         if(read(server.serialfd, &buff[pos], 1) <= 0)
             break;
-#endif
+
         if(buff[pos] != '\n') /* If this command is too long to fit into a buffer, clip it */
         {
             if(pos != SERIAL_BUFFER-1)
@@ -753,44 +971,26 @@ void serial_loop()
         msg_send(buff, pos+1);
         pos = 0;
     }
-    //#ifdef __WIN32__
-    //CloseHandle(server.serialfd);
-    //#else
+
     close(server.serialfd);
-    //#endif
 }
 
 void serial_write(char* msg, int len)
 {
     pthread_mutex_lock(&server.mutex_s);
-    //#ifdef __WIN32__
-    //OVERLAPPED osWrite = {0};
-    //DWORD dwWritten;
-    //
-    //osWrite.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    //if(osWrite.hEvent == NULL)
-    //{
-    //    server_log(LOG_ERR, "server_conn: CreateEvent");
-    //    exit(EXIT_FAILURE);
-    //}
-    //
-    //if(!WriteFile(server.serialfd, msg, len, &dwWritten, &osWrite))
-    //    if(GetLastError() == ERROR_IO_PENDING)
-    //        if(WaitForSingleObject(osWrite.hEvent, INFINITE) == WAIT_OBJECT_0)
-    //            GetOverlappedResult(server.serialfd, &osWrite, &dwWritten, FALSE);
-    //CloseHandle(osWrite.hEvent);
-    //#else
     ssize_t unused = write(server.serialfd, msg, len);
     (void) unused;
-    //#endif
     pthread_mutex_unlock(&server.mutex_s);
 }
 
-user_t* user_add(server_t* LIST, int fd, int auth)
+/* ── User management ──────────────────────────────────────────────────────── */
+
+user_t* user_add(server_t* LIST, int fd, int auth, int ws)
 {
     user_t* u = malloc(sizeof(user_t));
     u->fd = fd;
     u->auth = auth;
+    u->ws = ws;
     u->prev = NULL;
 
     pthread_mutex_lock(&LIST->mutex);
@@ -843,6 +1043,8 @@ void user_remove(server_t* LIST, user_t* USER)
     socket_close(USER->fd);
     free(USER);
 }
+
+/* ── Message broadcast ────────────────────────────────────────────────────── */
 
 void msg_parse_serial(char cmd, char* msg)
 {
@@ -937,24 +1139,33 @@ void msg_send(char* msg, int len)
     {
         if(server.guest || u->auth)
         {
-            sent = 0;
-            do
+            if(u->ws)
             {
-                n = send(u->fd, msg+sent, len-sent, MSG_NOSIGNAL);
-                if(n < 0)
-                {
-                    shutdown(u->fd, 2);
-                    break;
-                }
-                sent += n;
+                ws_write_frame(u->fd, msg, len);
             }
-            while(sent<len);
+            else
+            {
+                sent = 0;
+                do
+                {
+                    n = send(u->fd, msg+sent, len-sent, MSG_NOSIGNAL);
+                    if(n < 0)
+                    {
+                        shutdown(u->fd, 2);
+                        break;
+                    }
+                    sent += n;
+                }
+                while(sent<len);
+            }
         }
     }
     pthread_mutex_unlock(&server.mutex);
 }
 
-char* auth_salt()
+/* ── Auth ─────────────────────────────────────────────────────────────────── */
+
+char* auth_salt(void)
 {
     static const char chars[] = "QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm0123456789_-";
     const int len = strlen(chars);
@@ -995,7 +1206,9 @@ int auth_hash(char* salt, char* password, char* hash)
     return (strcasecmp(hash, sha_string) == 0);
 }
 
-void tuner_defaults()
+/* ── Tuner state ──────────────────────────────────────────────────────────── */
+
+void tuner_defaults(void)
 {
     server.mode = XDR_P_MODE_DEFAULT;
     server.volume = XDR_P_VOLUME_DEFAULT;
@@ -1013,17 +1226,10 @@ void tuner_defaults()
     server.detector = XDR_P_DETECTOR_DEFAULT;
 }
 
-void tuner_reset()
+void tuner_reset(void)
 {
     /* restart Arduino using RTS & DTR lines */
     pthread_mutex_lock(&server.mutex_s);
-    //#ifdef __WIN32__
-    //EscapeCommFunction(server.serialfd, CLRDTR);
-    //EscapeCommFunction(server.serialfd, CLRRTS);
-    //Sleep(10);
-    //EscapeCommFunction(server.serialfd, SETDTR);
-    //EscapeCommFunction(server.serialfd, SETRTS);
-    //#else
     int ctl;
     if(ioctl(server.serialfd, TIOCMGET, &ctl) != -1)
     {
@@ -1033,16 +1239,11 @@ void tuner_reset()
         ctl |=  (TIOCM_DTR | TIOCM_RTS);
         ioctl(server.serialfd, TIOCMSET, &ctl);
     }
-    //#endif
     tuner_defaults();
 
     /* Wait for controller re-initialization,
        before unlocking the mutex. */
-    //#ifdef __WIN32__
-    //Sleep(XDR_P_ARDUINO_INIT_TIME);
-    //#else
     usleep(XDR_P_ARDUINO_INIT_TIME * 1000);
-    //#endif
 
     pthread_mutex_unlock(&server.mutex_s);
 }
@@ -1050,9 +1251,5 @@ void tuner_reset()
 void socket_close(int fd)
 {
     shutdown(fd, 2);
-    //#ifdef __WIN32__
-    //closesocket(fd);
-    //#else
     close(fd);
-    //#endif
 }
