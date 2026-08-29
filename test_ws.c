@@ -20,7 +20,7 @@
 /* Functions under test (defined in xdrd_lib.o) */
 extern int  ws_handshake(int fd);
 extern int  ws_read_frame(int fd, char* buf, int maxlen);
-extern void ws_write_frame(int fd, const char* data, int len);
+extern int  ws_write_frame(int fd, const char* data, int len);
 extern int  auth_hash(char* salt, char* password, char* hash);
 extern char* auth_salt(void);
 
@@ -308,6 +308,88 @@ static int test_frame_ping_pong(void)
 }
 
 /*
+ * A fragmented text message (FIN=0 first frame + FIN=1 continuation frame)
+ * must be reassembled into one message (RFC 6455 §5.4).
+ */
+static int test_frame_fragmented(void)
+{
+    mk_pair();
+
+    const unsigned char mask[4] = {0x11, 0x22, 0x33, 0x44};
+    unsigned char frame[64];
+    const char *p1 = "T87";
+    const char *p2 = "500\n";
+    int i, pos;
+
+    /* Fragment 1: FIN=0, opcode=text, payload "T87" */
+    pos = 0;
+    frame[pos++] = 0x01;
+    frame[pos++] = 0x80 | 3;
+    memcpy(frame + pos, mask, 4); pos += 4;
+    for(i = 0; i < 3; i++) frame[pos++] = (unsigned char)p1[i] ^ mask[i % 4];
+    write(CLIENT, frame, pos);
+
+    /* Fragment 2: FIN=1, opcode=continuation, payload "500\n" */
+    pos = 0;
+    frame[pos++] = 0x80;
+    frame[pos++] = 0x80 | 4;
+    memcpy(frame + pos, mask, 4); pos += 4;
+    for(i = 0; i < 4; i++) frame[pos++] = (unsigned char)p2[i] ^ mask[i % 4];
+    write(CLIENT, frame, pos);
+
+    char buf[256];
+    int n = ws_read_frame(SERVER, buf, sizeof(buf));
+
+    int ok = (n == 7) && (memcmp(buf, "T87500\n", 7) == 0);
+    close_pair();
+    return ok;
+}
+
+/*
+ * A control frame declaring a payload > 125 bytes violates RFC 6455 §5.5 and
+ * cannot be resynced — ws_read_frame must return -1 (error).
+ */
+static int test_ctrl_frame_oversized(void)
+{
+    mk_pair();
+
+    unsigned char frame[4];
+    frame[0] = 0x89; /* FIN=1, ping */
+    frame[1] = 126;  /* extended length */
+    frame[2] = 0x00;
+    frame[3] = 200;  /* 200-byte payload */
+    write(CLIENT, frame, 4);
+
+    char buf[64];
+    int n = ws_read_frame(SERVER, buf, sizeof(buf));
+
+    close_pair();
+    return (n == -1);
+}
+
+/*
+ * An empty text frame is legal (RFC 6455) and must be skipped — not returned
+ * as 0, which callers treat as disconnect. The next data frame is returned.
+ */
+static int test_frame_empty_skipped(void)
+{
+    mk_pair();
+
+    unsigned char empty[2] = {0x81, 0x00};
+    write(CLIENT, empty, 2);
+
+    const char *msg = "next\n";
+    ws_write_frame(CLIENT, msg, (int)strlen(msg));
+
+    char buf[64];
+    int n = ws_read_frame(SERVER, buf, sizeof(buf));
+
+    int ok = (n == (int)strlen(msg)) && (memcmp(buf, msg, n) == 0);
+    close_pair();
+    return ok;
+}
+
+/*
  * auth_hash must accept the SHA1(salt + password) hex digest.
  */
 static int test_auth_hash_correct(void)
@@ -416,6 +498,9 @@ int main(void)
     RUN("ws_frame:    masked client frame correctly unmasked", test_frame_masked);
     RUN("ws_frame:    close frame returns 0",                  test_frame_close);
     RUN("ws_frame:    ping elicits pong, next frame returned", test_frame_ping_pong);
+    RUN("ws_frame:    fragmented message reassembled",         test_frame_fragmented);
+    RUN("ws_frame:    oversized control frame rejected",       test_ctrl_frame_oversized);
+    RUN("ws_frame:    empty text frame skipped",               test_frame_empty_skipped);
     RUN("auth_hash:   correct hash accepted",                  test_auth_hash_correct);
     RUN("auth_hash:   wrong hash rejected",                    test_auth_hash_wrong);
     RUN("ws_auth:     full salt/SHA1 challenge-response flow", test_auth_flow);

@@ -34,22 +34,10 @@ make
 make test
 ```
 
-`make test` runs 11 tests covering the full WS stack without any hardware:
-
-```
-[PASS] ws_handshake: valid upgrade (RFC 6455 example key)
-[PASS] ws_handshake: missing Sec-WebSocket-Key rejected
-[PASS] ws_handshake: header name is case-insensitive
-[PASS] ws_frame:    write/read roundtrip (short payload)
-[PASS] ws_frame:    write/read roundtrip (200-byte, ext len)
-[PASS] ws_frame:    masked client frame correctly unmasked
-[PASS] ws_frame:    close frame returns 0
-[PASS] ws_frame:    ping elicits pong, next frame returned
-[PASS] auth_hash:   correct hash accepted
-[PASS] auth_hash:   wrong hash rejected
-[PASS] ws_auth:     full salt/SHA1 challenge-response flow
-11 passed, 0 failed
-```
+`make test` runs the synthetic test suite in `test_ws.c` — handshake, framing
+(including fragmentation, control frames and masking) and the auth flow — using
+`socketpair()`, so no hardware or network is needed. See the test binary's
+output for the current list.
 
 ---
 
@@ -71,7 +59,7 @@ xdrd [ -s serial ] [ -t port ] [ -w wsport ] [ -u users ]
 | `-p` | Password (required) | — |
 | `-u` | Maximum simultaneous users | `10` |
 | `-g` | Allow guest login (read-only, no password) | off |
-| `-x` | Power tuner off when last user disconnects | off |
+| `-x` | Power tuner off when last user disconnects (currently not implemented — flag is accepted but has no effect) | off |
 | `-f` | Command to run when first user connects | — |
 | `-l` | Command to run when last user disconnects | — |
 | `-b` | Run in background (daemon mode) | off |

@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <errno.h>
 #include <stdint.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -108,25 +109,29 @@ typedef struct server
 typedef struct thread
 {
     int fd;
-    char* salt;
     char* ip;
     uint16_t port;
 } thread_t;
+
+typedef struct listener
+{
+    int fd;
+    void* (*conn_handler)(void*);
+} listener_t;
 
 server_t server;
 
 void show_usage(char*);
 void server_log(int prio, char* msg, ...);
 char* prepare_cmd(const char*);
-void server_init(int);
+void server_init(int, void* (*)(void*));
 void* server_thread(void*);
 void* server_conn(void*);
-void ws_server_init(int);
-void* ws_server_thread(void*);
 void* ws_server_conn(void*);
 int  ws_handshake(int);
 int  ws_read_frame(int, char*, int);
-void ws_write_frame(int, const char*, int);
+int  ws_write_frame(int, const char*, int);
+static int client_auth(int, int);
 void serial_init(char*);
 void serial_loop(void);
 void serial_write(char*, int);
@@ -285,12 +290,12 @@ int main(int argc, char* argv[])
     }
 
     server_log(LOG_INFO, "xdrd " VERSION " is starting using %s and TCP port: %d", serial, port);
-    server_init(port);
+    server_init(port, server_conn);
 
     if(ws_port)
     {
         server_log(LOG_INFO, "xdrd WebSocket server starting on port: %d", ws_port);
-        ws_server_init(ws_port);
+        server_init(ws_port, ws_server_conn);
     }
 
     serial_init(serial);
@@ -360,11 +365,12 @@ char* prepare_cmd(const char* cmd)
     return buff;
 }
 
-void server_init(int port)
+void server_init(int port, void* (*conn_handler)(void*))
 {
     int sockfd;
     struct sockaddr_in addr;
     pthread_t thread;
+    listener_t* l;
 
     if((sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
     {
@@ -392,22 +398,26 @@ void server_init(int port)
 
     listen(sockfd, 4);
 
-    if(pthread_create(&thread, NULL, server_thread, (void*)(intptr_t)sockfd))
+    l = malloc(sizeof(listener_t));
+    l->fd = sockfd;
+    l->conn_handler = conn_handler;
+
+    if(pthread_create(&thread, NULL, server_thread, (void*)l))
     {
         server_log(LOG_ERR, "server_init: pthread_create");
         exit(EXIT_FAILURE);
     }
 }
 
-void* server_thread(void* sockfd)
+void* server_thread(void* arg)
 {
+    listener_t* l = (listener_t*)arg;
     pthread_t thread;
     pthread_attr_t attr;
     int connfd;
     thread_t *t_data;
     struct sockaddr_in dest;
     socklen_t dest_size = sizeof(struct sockaddr_in);
-    char *salt;
 
     if(pthread_attr_init(&attr))
     {
@@ -421,7 +431,7 @@ void* server_thread(void* sockfd)
         exit(EXIT_FAILURE);
     }
 
-    while((connfd = accept4((int)(intptr_t)sockfd, (struct sockaddr *)&dest, &dest_size, SOCK_CLOEXEC)) >= 0)
+    while((connfd = accept4(l->fd, (struct sockaddr *)&dest, &dest_size, SOCK_CLOEXEC)) >= 0)
     {
         if(server.online >= server.maxusers)
         {
@@ -429,18 +439,11 @@ void* server_thread(void* sockfd)
             continue;
         }
 
-        if(!(salt = auth_salt()))
-        {
-            socket_close(connfd);
-            continue;
-        }
-
         t_data = malloc(sizeof(thread_t));
         t_data->fd = connfd;
-        t_data->salt = salt;
         t_data->ip = strdup(inet_ntoa(dest.sin_addr));
         t_data->port = ntohs(dest.sin_port);
-        if(pthread_create(&thread, &attr, server_conn, (void*)t_data))
+        if(pthread_create(&thread, &attr, l->conn_handler, (void*)t_data))
         {
             server_log(LOG_ERR, "server_thread: pthread_create");
             exit(EXIT_FAILURE);
@@ -453,23 +456,33 @@ void* server_thread(void* sockfd)
     return NULL;
 }
 
-void* server_conn(void* t_data)
+/*
+ * Challenge-response auth shared by both transports (ws selects the framing).
+ * Returns 1 = authenticated, 0 = connected as guest, -1 = rejected.
+ */
+static int client_auth(int fd, int ws)
 {
-    int connfd = ((thread_t*)t_data)->fd;
-    char* salt = ((thread_t*)t_data)->salt;
-    char* ip = ((thread_t*)t_data)->ip;
-    uint16_t port = ((thread_t*)t_data)->port;
+    char buffer[128];
+    int auth = 0;
+    ssize_t n = 0;
+    char* salt;
 
-    user_t *u;
-    fd_set input;
-    char buffer[100];
-    int pos = 0, auth = 0;
-
-    free(t_data);
+    if(!(salt = auth_salt()))
+        return -1;
 
     snprintf(buffer, sizeof(buffer), "%s\n", salt);
-    send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
-    if(recv(connfd, buffer, 41, MSG_NOSIGNAL) == 41)
+    if(ws)
+    {
+        ws_write_frame(fd, buffer, strlen(buffer));
+        n = ws_read_frame(fd, buffer, sizeof(buffer)-1);
+    }
+    else
+    {
+        send(fd, buffer, strlen(buffer), MSG_NOSIGNAL);
+        n = recv(fd, buffer, 41, MSG_NOSIGNAL);
+    }
+
+    if(n >= 40)
     {
         buffer[40] = 0;
         auth = auth_hash(salt, server.password, buffer);
@@ -479,17 +492,42 @@ void* server_conn(void* t_data)
 
     if(!auth && !server.guest)
     {
-        snprintf(buffer, sizeof(buffer), "a0\n");
-        send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
+        if(ws)
+            ws_write_frame(fd, "a0\n", 3);
+        else
+            send(fd, "a0\n", 3, MSG_NOSIGNAL);
+        return -1;
+    }
+
+    if(!auth)
+    {
+        if(ws)
+            ws_write_frame(fd, "a1\n", 3);
+        else
+            send(fd, "a1\n", 3, MSG_NOSIGNAL);
+    }
+
+    return auth;
+}
+
+void* server_conn(void* t_data)
+{
+    int connfd = ((thread_t*)t_data)->fd;
+    char* ip = ((thread_t*)t_data)->ip;
+    uint16_t port = ((thread_t*)t_data)->port;
+
+    user_t *u;
+    fd_set input;
+    char buffer[100];
+    int pos = 0, auth;
+
+    free(t_data);
+
+    if((auth = client_auth(connfd, 0)) < 0)
+    {
         socket_close(connfd);
         free(ip);
         return NULL;
-    }
-
-    if(!auth && server.guest)
-    {
-        snprintf(buffer, sizeof(buffer), "a1\n");
-        send(connfd, buffer, strlen(buffer), MSG_NOSIGNAL);
     }
 
     fcntl(connfd, F_SETFL, O_NONBLOCK);
@@ -532,92 +570,6 @@ void* server_conn(void* t_data)
 
 /* ── WebSocket server ─────────────────────────────────────────────────────── */
 
-void ws_server_init(int port)
-{
-    int sockfd;
-    struct sockaddr_in addr;
-    pthread_t thread;
-
-    if((sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) < 0)
-    {
-        server_log(LOG_ERR, "ws_server_init: socket");
-        exit(EXIT_FAILURE);
-    }
-
-    int value = 1;
-    if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&value, sizeof(value)) < 0)
-    {
-        server_log(LOG_ERR, "ws_server_init: SO_REUSEADDR");
-        exit(EXIT_FAILURE);
-    }
-
-    memset((char*)&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
-
-    if(bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0)
-    {
-        server_log(LOG_ERR, "ws_server_init: bind");
-        exit(EXIT_FAILURE);
-    }
-
-    listen(sockfd, 4);
-
-    if(pthread_create(&thread, NULL, ws_server_thread, (void*)(intptr_t)sockfd))
-    {
-        server_log(LOG_ERR, "ws_server_init: pthread_create");
-        exit(EXIT_FAILURE);
-    }
-}
-
-void* ws_server_thread(void* sockfd)
-{
-    pthread_t thread;
-    pthread_attr_t attr;
-    int connfd;
-    thread_t *t_data;
-    struct sockaddr_in dest;
-    socklen_t dest_size = sizeof(struct sockaddr_in);
-
-    if(pthread_attr_init(&attr))
-    {
-        server_log(LOG_ERR, "ws_server_thread: pthread_attr_init");
-        exit(EXIT_FAILURE);
-    }
-
-    if(pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED))
-    {
-        server_log(LOG_ERR, "ws_server_thread: pthread_attr_setdetachstate");
-        exit(EXIT_FAILURE);
-    }
-
-    while((connfd = accept4((int)(intptr_t)sockfd, (struct sockaddr *)&dest, &dest_size, SOCK_CLOEXEC)) >= 0)
-    {
-        if(server.online >= server.maxusers)
-        {
-            socket_close(connfd);
-            continue;
-        }
-
-        t_data = malloc(sizeof(thread_t));
-        t_data->fd = connfd;
-        t_data->salt = NULL;
-        t_data->ip = strdup(inet_ntoa(dest.sin_addr));
-        t_data->port = ntohs(dest.sin_port);
-        if(pthread_create(&thread, &attr, ws_server_conn, (void*)t_data))
-        {
-            server_log(LOG_ERR, "ws_server_thread: pthread_create");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    pthread_attr_destroy(&attr);
-    server_log(LOG_ERR, "ws_server_thread: accept");
-    exit(EXIT_FAILURE);
-    return NULL;
-}
-
 void* ws_server_conn(void* t_data)
 {
     int connfd = ((thread_t*)t_data)->fd;
@@ -625,7 +577,7 @@ void* ws_server_conn(void* t_data)
     uint16_t port = ((thread_t*)t_data)->port;
 
     char frame[256];
-    int auth = 0;
+    int auth, n;
     user_t *u;
 
     free(t_data);
@@ -637,36 +589,16 @@ void* ws_server_conn(void* t_data)
         return NULL;
     }
 
-    char* salt = auth_salt();
-    if(!salt)
+    if((auth = client_auth(connfd, 1)) < 0)
     {
         socket_close(connfd);
         free(ip);
         return NULL;
     }
 
-    snprintf(frame, sizeof(frame), "%s\n", salt);
-    ws_write_frame(connfd, frame, strlen(frame));
-
-    int n = ws_read_frame(connfd, frame, sizeof(frame) - 1);
-    if(n >= 40)
-    {
-        frame[40] = 0;
-        auth = auth_hash(salt, server.password, frame);
-    }
-
-    free(salt);
-
-    if(!auth && !server.guest)
-    {
-        ws_write_frame(connfd, "a0\n", 3);
-        socket_close(connfd);
-        free(ip);
-        return NULL;
-    }
-
-    if(!auth && server.guest)
-        ws_write_frame(connfd, "a1\n", 3);
+    /* Non-blocking like the TCP path, so a stalled client cannot block
+     * msg_send while it holds the users mutex. */
+    fcntl(connfd, F_SETFL, O_NONBLOCK);
 
     server_log(LOG_INFO, "WS user connected: %s:%u%s", ip, port, (auth ? "" : " (guest)"));
 
@@ -725,6 +657,19 @@ int ws_handshake(int fd)
             return 0;
     }
 
+    /* Require an "Upgrade: websocket" header; otherwise this is a plain
+     * HTTP request and must not be answered with 101. */
+    p = strcasestr(buf, "Upgrade:");
+    if(!p)
+        return 0;
+    end = strstr(p, "\r\n");
+    if(!end)
+        return 0;
+    *end = 0;
+    if(!strcasestr(p, "websocket"))
+        return 0;
+    *end = '\r';
+
     p = strcasestr(buf, "Sec-WebSocket-Key:");
     if(!p)
         return 0;
@@ -762,24 +707,64 @@ int ws_handshake(int fd)
     return 1;
 }
 
-/* Read exactly len bytes from fd into buf. Returns 1 on success, 0 on error. */
+/* Read exactly len bytes from fd into buf, waiting in select() when the fd
+ * is non-blocking. Returns 1 on success, 0 on error/close. */
 static int recv_all(int fd, void* buf, size_t len)
 {
     size_t total = 0;
+    fd_set input;
     while(total < len)
     {
         ssize_t n = recv(fd, (char*)buf + total, len - total, 0);
-        if(n <= 0)
-            return 0;
-        total += n;
+        if(n > 0)
+        {
+            total += n;
+            continue;
+        }
+        if(n < 0 && errno == EINTR)
+            continue;
+        if(n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        {
+            FD_ZERO(&input);
+            FD_SET(fd, &input);
+            select(fd+1, &input, NULL, NULL, NULL);
+            continue;
+        }
+        return 0;
     }
     return 1;
 }
 
+/* ponytail: one global write lock for all WS fds; per-user locks if throughput matters */
+static pthread_mutex_t ws_write_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Send one fully-assembled WS frame. Serialized so the broadcast thread and a
+ * connection thread's pong cannot interleave bytes on the same fd.
+ * Returns 0 on success, -1 on error (caller should drop the client). */
+static int ws_send_locked(int fd, const unsigned char* data, int len)
+{
+    int sent = 0, n, ret = 0;
+
+    pthread_mutex_lock(&ws_write_mutex);
+    while(sent < len)
+    {
+        n = send(fd, data + sent, len - sent, MSG_NOSIGNAL);
+        if(n < 0)
+        {
+            ret = -1;
+            break;
+        }
+        sent += n;
+    }
+    pthread_mutex_unlock(&ws_write_mutex);
+    return ret;
+}
+
 /*
- * Reads one complete WebSocket frame from fd into buf (null-terminated).
+ * Reads one complete WebSocket message from fd into buf (null-terminated),
+ * reassembling fragmented messages (FIN=0 + continuation frames).
  * Handles masking (client→server frames are always masked per RFC 6455).
- * Transparently handles ping/pong; skips unknown opcodes.
+ * Transparently handles ping/pong; empty messages are skipped.
  * Returns payload length on success, 0 on clean close/disconnect, -1 on error.
  */
 int ws_read_frame(int fd, char* buf, int maxlen)
@@ -787,7 +772,8 @@ int ws_read_frame(int fd, char* buf, int maxlen)
     unsigned char hdr[2];
     uint64_t plen;
     unsigned char mask[4];
-    int masked, opcode;
+    int masked, opcode, fin;
+    int off = 0;
     int i;
 
     while(1)
@@ -795,6 +781,7 @@ int ws_read_frame(int fd, char* buf, int maxlen)
         if(!recv_all(fd, hdr, 2))
             return 0;
 
+        fin = (hdr[0] >> 7) & 1;
         opcode = hdr[0] & 0x0F;
         masked = (hdr[1] >> 7) & 1;
         plen = hdr[1] & 0x7F;
@@ -820,84 +807,93 @@ int ws_read_frame(int fd, char* buf, int maxlen)
         if(masked && !recv_all(fd, mask, 4))
             return 0;
 
-        if(opcode == 0x8) /* Close */
+        if(opcode & 0x8) /* Control frame: close/ping/pong */
         {
-            if(plen > 0 && plen <= 125)
-            {
-                char discard[125];
-                recv_all(fd, discard, (size_t)plen);
-            }
-            return 0;
-        }
+            unsigned char payload[125];
 
-        if(opcode == 0x9) /* Ping — respond with Pong */
-        {
-            unsigned char ping_payload[125];
-            size_t ping_len = (plen <= 125) ? (size_t)plen : 0;
-            if(ping_len > 0 && !recv_all(fd, ping_payload, ping_len))
+            /* RFC 6455 §5.5: control frames carry at most 125 bytes;
+             * anything larger cannot be resynced — drop the connection. */
+            if(plen > 125)
+                return -1;
+
+            if(plen > 0 && !recv_all(fd, payload, (size_t)plen))
                 return 0;
             if(masked)
-                for(i = 0; i < (int)ping_len; i++)
-                    ping_payload[i] ^= mask[i % 4];
-            unsigned char pong_hdr[2] = {0x8A, (unsigned char)ping_len};
-            send(fd, pong_hdr, 2, MSG_NOSIGNAL);
-            if(ping_len > 0)
-                send(fd, ping_payload, ping_len, MSG_NOSIGNAL);
-            continue;
-        }
+                for(i = 0; i < (int)plen; i++)
+                    payload[i] ^= mask[i % 4];
 
-        if(opcode == 0x0A) /* Pong — ignore */
-        {
-            if(plen > 0 && plen <= 125)
+            if(opcode == 0x8) /* Close */
+                return 0;
+
+            if(opcode == 0x9) /* Ping — respond with Pong */
             {
-                char discard[125];
-                recv_all(fd, discard, (size_t)plen);
+                unsigned char pong[2 + 125];
+                pong[0] = 0x8A;
+                pong[1] = (unsigned char)plen;
+                memcpy(pong + 2, payload, (size_t)plen);
+                ws_send_locked(fd, pong, 2 + (int)plen);
             }
+
+            /* Pong (0xA) and reserved control opcodes: ignore */
             continue;
         }
 
-        /* Text (0x1) or binary (0x2) or continuation (0x0) */
-        if(plen >= (uint64_t)maxlen)
+        /* Data frame: text (0x1), binary (0x2) or continuation (0x0) */
+        if((off == 0 && opcode == 0x0) || opcode > 0x2)
+            return -1; /* stray continuation or reserved opcode */
+
+        if(plen >= (uint64_t)(maxlen - off))
             return -1;
 
-        if(plen > 0 && !recv_all(fd, buf, (size_t)plen))
+        if(plen > 0 && !recv_all(fd, buf + off, (size_t)plen))
             return 0;
 
         if(masked)
             for(i = 0; i < (int)plen; i++)
-                buf[i] ^= mask[i % 4];
+                buf[off + i] ^= mask[i % 4];
 
-        buf[plen] = 0;
-        return (int)plen;
+        off += (int)plen;
+
+        if(!fin)
+            continue; /* accumulate fragments until FIN */
+
+        if(off == 0)
+            continue; /* empty message (legal): skip, keep reading */
+
+        buf[off] = 0;
+        return off;
     }
 }
 
 /*
  * Sends data as a single unmasked WebSocket text frame (server→client frames
- * are never masked per RFC 6455).
+ * are never masked per RFC 6455). Returns 0 on success, -1 on error.
  */
-void ws_write_frame(int fd, const char* data, int len)
+int ws_write_frame(int fd, const char* data, int len)
 {
-    unsigned char hdr[4];
+    unsigned char frame[SERIAL_BUFFER + 4];
     int hlen;
 
-    hdr[0] = 0x81; /* FIN=1, opcode=text */
+    if(len < 0 || len > SERIAL_BUFFER)
+        return -1;
+
+    frame[0] = 0x81; /* FIN=1, opcode=text */
 
     if(len < 126)
     {
-        hdr[1] = (unsigned char)len;
+        frame[1] = (unsigned char)len;
         hlen = 2;
     }
     else
     {
-        hdr[1] = 126;
-        hdr[2] = (len >> 8) & 0xFF;
-        hdr[3] = len & 0xFF;
+        frame[1] = 126;
+        frame[2] = (len >> 8) & 0xFF;
+        frame[3] = len & 0xFF;
         hlen = 4;
     }
 
-    send(fd, hdr, hlen, MSG_NOSIGNAL);
-    send(fd, data, len, MSG_NOSIGNAL);
+    memcpy(frame + hlen, data, len);
+    return ws_send_locked(fd, frame, hlen + len);
 }
 
 /* ── Serial ───────────────────────────────────────────────────────────────── */
@@ -1141,7 +1137,8 @@ void msg_send(char* msg, int len)
         {
             if(u->ws)
             {
-                ws_write_frame(u->fd, msg, len);
+                if(ws_write_frame(u->fd, msg, len) < 0)
+                    shutdown(u->fd, 2);
             }
             else
             {

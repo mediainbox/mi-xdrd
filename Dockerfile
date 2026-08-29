@@ -34,4 +34,5 @@ COPY 99-tef-tuners.rules /etc/udev/rules.d/99-tef-tuners.rules
 ENV UDEV=on
 
 ENTRYPOINT ["/usr/local/bin/entry.sh"]
-CMD ["/bin/sh", "-c", "exec gosu xdrd xdrd -s \"$XDRD_SERIAL_PORT\" -t \"$XDRD_TCP_PORT\" -p \"$XDRD_PASSWORD\" -g"]
+# XDRD_WS_PORT is optional: when set, the WebSocket listener is enabled (-w).
+CMD ["/bin/sh", "-c", "exec gosu xdrd xdrd -s \"$XDRD_SERIAL_PORT\" -t \"$XDRD_TCP_PORT\" ${XDRD_WS_PORT:+-w \"$XDRD_WS_PORT\"} -p \"$XDRD_PASSWORD\" -g"]

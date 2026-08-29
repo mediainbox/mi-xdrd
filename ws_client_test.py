@@ -47,17 +47,22 @@ async def main():
         print(f"[auth] sending hash:  {digest}")
         await ws.send(digest)
 
-        # 3. Check server response
-        response = await recv_line(ws)
+        # 3. Check server response. Authenticated users get no 'a' frame at
+        #    all, so don't block forever waiting for one on an idle tuner.
+        try:
+            response = await asyncio.wait_for(recv_line(ws), timeout=2)
+        except asyncio.TimeoutError:
+            response = None
+
         if response == "a0":
             print("[auth] FAILED — wrong password")
             return
         elif response == "a1":
             print("[auth] connected as GUEST (read-only)")
         else:
-            # Authenticated users get no 'a' frame; first message is tuner data
             print("[auth] authenticated OK")
-            print(f"[tuner] {response}")
+            if response is not None:
+                print(f"[tuner] {response}")
 
         print("\nListening for tuner data (Ctrl+C to quit).")
         print("Type a command and press Enter to send (e.g. T87500):\n")
